@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WebLLM Voice Assistant</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 920px; margin: 24px auto; padding: 0 16px; }
+    button, input { padding: 10px 12px; margin: 4px 6px 4px 0; }
+    input { width: 100%; box-sizing: border-box; }
+    #status { font-weight: 700; }
+    #log { white-space: pre-wrap; background: #111; color: #d7ffd7; padding: 12px; border-radius: 10px; min-height: 320px; }
+    .row { margin: 12px 0; }
+    .small { color: #666; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>WebLLM Voice Assistant</h1>
+
+  <div class="row">
+    <label>Model ID</label>
+    <input id="modelId" value="Qwen2.5-0.5B-Instruct-q4f16_1-MLC" />
+    <div class="small">0.5Bモデルを固定済み</div>
+  </div>
+
+  <div class="row">
+    <button id="loadBtn">Load Model</button>
+    <button id="startBtn" disabled>Start Mic</button>
+    <button id="stopBtn" disabled>Stop</button>
+  </div>
+
+  <div class="row">
+    <label><input type="checkbox" id="wakeWordOn" checked /> Wake word</label>
+    <label><input type="checkbox" id="autoSpeakOn" checked /> Speak reply</label>
+  </div>
+
+  <div class="row">
+    Wake word: <input id="wakeWord" value="アレクサ" />
+  </div>
+
+  <div class="row">Status: <span id="status">idle</span></div>
+  <div id="log"></div>
+
+  <script type="module">
+    import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+
+    const logEl = document.getElementById("log");
+    const statusEl = document.getElementById("status");
+    const modelIdEl = document.getElementById("modelId");
+    const wakeWordEl = document.getElementById("wakeWord");
+    const wakeWordOnEl = document.getElementById("wakeWordOn");
+    const autoSpeakOnEl = document.getElementById("autoSpeakOn");
+    const loadBtn = document.getElementById("loadBtn");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+
+    let engine = null;
+    let recognition = null;
+    let listening = false;
+    let inConversation = false;
+    let lastFinal = "";
+    let speechTimer = null;
+
+    function log(msg) {
+      logEl.textContent += msg + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(s) {
+      statusEl.textContent = s;
+    }
+
+    function SRClass() {
+      return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+    }
+
+    async function loadModel() {
+      try {
+        setStatus("loading model...");
+        log("loading model...");
+        const modelId = modelIdEl.value.trim();
+
+        engine = await webllm.CreateWebLLM({
+          model: modelId,
+          initProgressCallback: (p) => {
+            if (p?.text) setStatus(p.text);
+          }
+        });
+
+        setStatus("model ready");
+        log("model ready: " + modelId);
+        startBtn.disabled = false;
+      } catch (e) {
+        console.error(e);
+        setStatus("load failed");
+        log("load failed: " + (e?.message || e));
+      }
+    }
+
+    function startRecognition() {
+      const SR = SRClass();
+      if (!SR) {
+        alert("このブラウザは音声認識に非対応です。Chrome系で開いてください。");
+        return;
+      }
+
+      recognition = new SR();
+      recognition.lang = "ja-JP";
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+
+      recognition.onstart = () => {
+        listening = true;
+        setStatus("listening");
+        log("listening...");
+      };
+
+      recognition.onerror = (e) => {
+        log("speech error: " + e.error);
+        setStatus("error");
+      };
+
+      recognition.onend = () => {
+        if (listening) {
+          try { recognition.start(); } catch {}
+        }
+      };
+
+      recognition.onresult = async (event) => {
+        let finalText = "";
+        let interimText = "";
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const txt = event.results[i][0].transcript.trim();
+          if (event.results[i].isFinal) finalText += txt + " ";
+          else interimText += txt;
+        }
+
+        if (interimText) setStatus("hearing: " + interimText);
+
+        if (finalText.trim()) {
+          const text = finalText.trim();
+          if (text === lastFinal) return;
+          lastFinal = text;
+
+          log("user: " + text);
+
+          const wakeWord = wakeWordEl.value.trim();
+          const wakeEnabled = wakeWordOnEl.checked;
+
+          if (wakeEnabled && !inConversation) {
+            if (text.includes(wakeWord)) {
+              inConversation = true;
+              const cleaned = text.replace(wakeWord, "").trim();
+              if (cleaned) await reply(cleaned);
+              else {
+                setStatus("ready");
+                log("wake word detected");
+              }
+            }
+          } else {
+            await reply(text);
+          }
+        }
+      };
+
+      recognition.start();
+    }
+
+    async function reply(userText) {
+      if (!engine) return;
+
+      setStatus("thinking...");
+      log("assistant: ");
+
+      const messages = [
+        {
+          role: "system",
+          content: "あなたは短く、正確で、実用的な日本語の音声アシスタントです。"
+        },
+        { role: "user", content: userText }
+      ];
+
+      let answer = "";
+      try {
+        const stream = await engine.chat.completions.create({
+          messages,
+          temperature: 0.5,
+          max_tokens: 256,
+          stream: true
+        });
+
+        for await (const chunk of stream) {
+          const delta = chunk.choices?.[0]?.delta?.content || "";
+          if (delta) answer += delta;
+        }
+
+        answer = answer.trim();
+        log(answer);
+        setStatus("speaking");
+
+        if (autoSpeakOnEl.checked) speak(answer);
+        else setStatus("listening");
+      } catch (e) {
+        console.error(e);
+        log("reply error: " + (e?.message || e));
+        setStatus("error");
+      }
+    }
+
+    function speak(text) {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "ja-JP";
+      u.rate = 1.0;
+      u.pitch = 1.0;
+      u.onend = () => setStatus("listening");
+      u.onerror = () => setStatus("listening");
+      speechSynthesis.speak(u);
+    }
+
+    function stopAll() {
+      listening = false;
+      inConversation = false;
+      if (recognition) {
+        try { recognition.stop(); } catch {}
+        recognition = null;
+      }
+      speechSynthesis.cancel();
+      setStatus("stopped");
+      log("stopped");
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    }
+
+    loadBtn.onclick = loadModel;
+    startBtn.onclick = async () => {
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      inConversation = false;
+      startRecognition();
+    };
+    stopBtn.onclick = stopAll;
+  </script>
+</body>
+</html>
