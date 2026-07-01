@@ -3,7 +3,6 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WebLLM Voice Assistant</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 920px; margin: 24px auto; padding: 0 16px; }
@@ -167,21 +166,37 @@
       recognition.start();
     }
 
+    function typeWrite(text, prefix = "") {
+      return new Promise((resolve) => {
+        let i = 0;
+        const line = prefix;
+        logEl.textContent += line;
+        logEl.scrollTop = logEl.scrollHeight;
+
+        const timer = setInterval(() => {
+          if (i >= text.length) {
+            clearInterval(timer);
+            logEl.textContent += "\n";
+            resolve();
+            return;
+          }
+          logEl.textContent += text[i];
+          i++;
+          logEl.scrollTop = logEl.scrollHeight;
+        }, 20); // 1文字ずつ表示速度
+      });
+    }
+
     async function reply(userText) {
       if (!engine) return;
 
       setStatus("thinking...");
-      log("assistant: ");
 
       const messages = [
-        {
-          role: "system",
-          content: "あなたは短く、正確で、実用的な日本語の音声アシスタントです。"
-        },
+        { role: "system", content: "あなたは短く、正確で、実用的な日本語の音声アシスタントです。" },
         { role: "user", content: userText }
       ];
 
-      let answer = "";
       try {
         const stream = await engine.chat.completions.create({
           messages,
@@ -190,16 +205,21 @@
           stream: true
         });
 
+        setStatus("replying...");
+        await typeWrite("", "assistant: ");
+
+        let full = "";
         for await (const chunk of stream) {
           const delta = chunk.choices?.[0]?.delta?.content || "";
-          if (delta) answer += delta;
+          if (!delta) continue;
+          full += delta;
+          await typeWrite(delta); // 1文字ずつ出る
         }
 
-        answer = answer.trim();
-        log(answer);
+        full = full.trim();
         setStatus("speaking");
 
-        if (autoSpeakOnEl.checked) speak(answer);
+        if (autoSpeakOnEl.checked) speak(full);
         else setStatus("listening");
       } catch (e) {
         console.error(e);
