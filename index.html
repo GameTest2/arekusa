@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WebLLM Voice Assistant</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 920px; margin: 24px auto; padding: 0 16px; }
@@ -20,7 +21,7 @@
   <div class="row">
     <label>Model ID</label>
     <input id="modelId" value="Qwen2.5-0.5B-Instruct-q4f16_1-MLC" />
-    <div class="small">0.5Bモデルを固定済み</div>
+    <div class="small">0.5Bモデル固定</div>
   </div>
 
   <div class="row">
@@ -42,7 +43,7 @@
   <div id="log"></div>
 
   <script type="module">
-    import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+    import { CreateMLCEngine } from "https://esm.run/@mlc-ai/web-llm";
 
     const logEl = document.getElementById("log");
     const statusEl = document.getElementById("status");
@@ -59,7 +60,6 @@
     let listening = false;
     let inConversation = false;
     let lastFinal = "";
-    let speechTimer = null;
 
     function log(msg) {
       logEl.textContent += msg + "\n";
@@ -80,8 +80,7 @@
         log("loading model...");
         const modelId = modelIdEl.value.trim();
 
-        engine = await webllm.CreateWebLLM({
-          model: modelId,
+        engine = await CreateMLCEngine(modelId, {
           initProgressCallback: (p) => {
             if (p?.text) setStatus(p.text);
           }
